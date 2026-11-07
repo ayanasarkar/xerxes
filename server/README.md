@@ -40,7 +40,50 @@ test/                        DAG engine and security pipeline tests
 
 ## Security pipeline
 
-Build the security DAG separately from its runner. The factory returns a fresh graph containing the four existing independent mock tasks; it does not execute them.
+Build the security DAG separately from its runner. The factory returns a fresh graph containing four mock tasks; it does not execute them.
+
+```mermaid
+flowchart TD
+  certificateValidation --> securityAssessment
+  threatIntelligence --> threatAnalysis
+  threatAnalysis --> securityAssessment
+```
+
+`certificateValidation` and `threatIntelligence` can run concurrently. `threatAnalysis` reads the intelligence output, and `securityAssessment` waits for both certificate validation and threat analysis before combining their outputs. Everything is local mock data: the submitted URL is not fetched or analyzed. The mock score is 25 per intelligence match, capped at 100; it is not a real risk score. Default fixtures have no matches and an unknown certificate status, so the API's existing neutral response is unchanged.
+
+### Test the mock pipeline
+
+Run these commands from `server/` (after `pnpm install` if dependencies are not installed):
+
+```sh
+# Focused tests: graph, execution order, dependency data flow, and isolated runs
+pnpm exec tsx --test test/security-pipeline.test.ts
+
+# Full test suite and TypeScript checks
+pnpm test
+pnpm typecheck
+```
+
+The data-flow test replaces the two root task outputs with an invalid certificate and one mock intelligence match. It checks that downstream tasks produce a score of `25`, a `suspicious` verdict, and two findings.
+
+For an HTTP smoke test, start `pnpm dev`, then run in a second terminal:
+
+```sh
+curl --fail-with-body -sS http://localhost:3000/api/analyze \
+  -H 'Content-Type: application/json' \
+  -d '{"url":"https://example.com"}'
+```
+
+Expected response (JSON key order may vary):
+
+```json
+{
+  "certificateValidation": { "valid": null },
+  "threatIntelligence": { "matches": [] },
+  "threatAnalysis": { "verdict": "unknown", "score": 0 },
+  "securityAssessment": { "findings": [] }
+}
+```
 
 ```ts
 import { PipelineRunner } from './src/pipeline/pipeline-runner.js';
