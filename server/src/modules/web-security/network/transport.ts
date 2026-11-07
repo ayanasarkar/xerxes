@@ -5,10 +5,12 @@ import ipaddr from 'ipaddr.js';
 import type { Page, ScannerConfig } from '../types.js';
 import { parseTarget, PolicyError, publicAddress, resolvePublic, type Resolver } from './policy.js';
 
-export type Transport = (url: URL, signal: AbortSignal) => Promise<Page>;
+export interface RequestInit { method?: string; body?: Buffer; contentType?: string; }
+export type Transport = (url: URL, signal: AbortSignal, init?: RequestInit) => Promise<Page>;
+export type RequestFactory = (url: URL, options: http.RequestOptions) => http.ClientRequest;
 /** No connection pooling, environment proxies, automatic redirects, cookies, or credential forwarding. */
-export function createTransport(config: ScannerConfig, resolver?: Resolver): Transport {
-  return async (url, parentSignal) => {
+export function createTransport(config: ScannerConfig, resolver?: Resolver, factory?: RequestFactory): Transport {
+  return async (url, parentSignal, init = {}) => {
     parseTarget(url.href);
     const signal = AbortSignal.any([parentSignal, AbortSignal.timeout(config.requestTimeoutMs)]);
     // DNS lookup is itself deadline-bounded. A late DNS completion never starts a connection.
@@ -21,11 +23,14 @@ export function createTransport(config: ScannerConfig, resolver?: Resolver): Tra
     signal.throwIfAborted();
     return new Promise<Page>((resolve, reject) => {
       const secure = url.protocol === 'https:';
-      const request = (secure ? https : http).request(url, {
-        agent: false, signal, maxHeaderSize: 16_384,
+      const request = (factory ?? (secure ? https : http).request)(url, {
+        agent: false, signal, maxHeaderSize: 16_384, method: init.method ?? 'GET',
+        // An explicit family also prevents Node's autoSelectFamily/all-address lookup path.
+        family: address.family,
         // Connect directly to the validated address while retaining original Host/SNI and certificate verification.
         lookup: (_hostname, _options, callback) => callback(null, address.address, address.family),
-        headers: { 'user-agent': 'Xerxes-WebSecurity/1.0', accept: 'text/html,application/javascript,text/plain;q=0.8', 'accept-encoding': 'identity' },
+        headers: { 'user-agent': 'Xerxes-WebSecurity/1.0', accept: 'text/html,application/javascript,text/plain;q=0.8', 'accept-encoding': 'identity',
+          ...(init.body ? { 'content-length': String(init.body.length) } : {}), ...(init.contentType ? { 'content-type': init.contentType } : {}) },
       });
       request.on('socket', (socket) => {
         socket.once('connect', () => {
@@ -54,7 +59,7 @@ export function createTransport(config: ScannerConfig, resolver?: Resolver): Tra
         response.once('aborted', () => reject(new Error('Response interrupted')));
         response.once('end', () => resolve({ url: url.href, status: response.statusCode ?? 0, headers: response.headers as Page['headers'], body: Buffer.concat(chunks).toString('utf8') }));
       });
-      request.end();
+      request.end(init.body);
     });
   };
 }

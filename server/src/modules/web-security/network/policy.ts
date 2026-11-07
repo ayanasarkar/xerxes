@@ -19,6 +19,7 @@ export function parseTarget(raw: unknown): URL {
 }
 export function publicAddress(address: string): boolean {
   try {
+    if (address === '168.63.129.16') return false; // Azure platform virtual IP, not an Internet scan target.
     const parsed = ipaddr.parse(address);
     // ipaddr marks mapped, translation, multicast, reserved, private, and link-local ranges separately.
     return parsed.range() === 'unicast';
@@ -32,9 +33,9 @@ export async function resolvePublic(url: URL, resolver: Resolver = systemResolve
   if (!addresses.length || addresses.some(({ address }) => !publicAddress(address))) throw new PolicyError('Target resolves to a prohibited network');
   return addresses[0]!;
 }
-export function authorize(request: ScanRequest, url: URL, config: ScannerConfig): void {
+export function authorize(request: ScanRequest, url: URL, config: ScannerConfig): number {
   if (request.mode !== undefined && request.mode !== 'passive' && request.mode !== 'active') throw new PolicyError('Invalid scan mode');
-  if ((request.mode ?? 'passive') === 'passive' && !config.requirePassiveAuthorization) return;
+  if ((request.mode ?? 'passive') === 'passive' && !config.requirePassiveAuthorization) return Infinity;
   const token = typeof request.authorizationToken === 'string' ? request.authorizationToken : '';
   const supplied = Buffer.from(token);
   const grant = config.grants.find((candidate) => {
@@ -43,4 +44,5 @@ export function authorize(request: ScanRequest, url: URL, config: ScannerConfig)
       candidate.modes.includes(request.mode ?? 'passive') && Date.parse(candidate.expiresAt) > Date.now();
   });
   if (!grant) throw new PolicyError('A valid, unexpired authorization grant for this exact origin and mode is required');
+  return Date.parse(grant.expiresAt);
 }

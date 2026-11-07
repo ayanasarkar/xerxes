@@ -37,6 +37,7 @@ export class WebSecurityScanner {
         'Only bounded same-origin HTTP responses are assessed; no finding does not imply a secure website.',
         'CORS origin reflection and credentialed reads are not tested. Dependency advisory coverage is limited to recognized jQuery banners.',
         'Browser behavior, CSS imports, dynamically generated content, and actual exploitability are not verified.',
+        'HTML inspection is capped at 10,000 elements per response and reports at 500 findings.',
       ],
     };
     const finish = () => {
@@ -48,18 +49,20 @@ export class WebSecurityScanner {
       return result;
     };
     let target: URL;
-    try { target = parseTarget(request.url); authorize(request, target, this.config); }
+    let authorizationDeadline: number;
+    try { target = parseTarget(request.url); authorizationDeadline = authorize(request, target, this.config); }
     catch { result.status = 'blocked'; result.coverageLimitations.push('Invalid target, mode, or missing/expired target authorization'); return finish(); }
     if (this.running >= this.config.maxConcurrentScans) {
       result.status = 'blocked'; result.coverageLimitations.push('Scanner concurrency capacity reached; retry later'); return finish();
     }
     this.running++;
-    const signal = AbortSignal.any([AbortSignal.timeout(this.config.scanTimeoutMs), ...(cancellation ? [cancellation] : [])]);
+    const signal = AbortSignal.any([AbortSignal.timeout(Math.max(1, Math.min(this.config.scanTimeoutMs, authorizationDeadline - Date.now()))), ...(cancellation ? [cancellation] : [])]);
     const queue: { url: URL; depth: number; redirects: number }[] = [{ url: target, depth: 0, redirects: 0 }];
     const visited = new Set<string>();
     const keys = new Set<string>();
     const pages: Page[] = [];
     const add = (finding: FindingInput) => {
+      if (result.findings.length >= 500) { result.status = 'partial'; return; }
       const key = findingKey(finding);
       if (!keys.has(key)) { const normalized = normalize(finding); result.findings.push(normalized); keys.add(key); }
     };

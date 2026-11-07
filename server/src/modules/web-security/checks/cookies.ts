@@ -13,7 +13,8 @@ export const cookies: Check = {
       if (!sameSite || !['strict', 'lax', 'none'].includes(sameSite)) missing.push('valid SameSite');
       const findings = missing.length ? [observation(page, this.id, 'Cookie hardening attributes missing',
         'Cookie purpose is unknown: some cookies intentionally allow script access. Browser SameSite defaults may mitigate omission.',
-        `Set-Cookie #${index + 1}: missing ${missing.join(', ')}; cookie name/value omitted`, 'low', ['CWE-614', 'CWE-1004'],
+        `Set-Cookie #${index + 1}: missing ${missing.join(', ')}; cookie name/value omitted`, 'low',
+        [...(!attrs.has('secure') ? ['CWE-614'] : []), ...(!attrs.has('httponly') ? ['CWE-1004'] : []), ...(!sameSite || !['strict', 'lax', 'none'].includes(sameSite) ? ['CWE-1275'] : [])],
         'Use Secure for HTTPS cookies, HttpOnly for session cookies, and an explicit SameSite policy appropriate to the application.')] : [];
       if (sameSite === 'none' && !attrs.has('secure')) findings.push(observation(page, this.id, 'SameSite=None cookie lacks Secure',
         'Modern browsers reject this cookie configuration; this does not demonstrate session compromise.',
