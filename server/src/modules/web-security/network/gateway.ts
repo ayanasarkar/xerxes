@@ -53,8 +53,9 @@ export function createGateway(policy: GatewayPolicy, config: ScannerConfig, tran
       const location = headers.location;
       if (typeof location === 'string') {
         const next = new URL(location, actual);
-        if (next.origin !== target.origin) throw new PolicyError('Redirect outside authorization scope');
-        headers.location = new URL(next.pathname + next.search, proxy).href;
+        // Preserve off-origin Location as evidence (needed for open-redirect detection),
+        // but never fetch it. Any follow-up by ZAP must pass this gateway's origin check.
+        if (next.origin === target.origin) headers.location = new URL(next.pathname + next.search, proxy).href;
       }
       headers.connection = 'close';
       res.writeHead(page.status, headers); res.end(page.body);

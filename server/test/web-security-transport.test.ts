@@ -5,11 +5,12 @@ import { Readable } from 'node:stream';
 import type http from 'node:http';
 import { loadConfig } from '../src/modules/web-security/config.js';
 import { createTransport, type RequestFactory } from '../src/modules/web-security/network/transport.js';
+import { WebSecurityScanner } from '../src/modules/web-security/scanner.js';
 
 const address = '93.184.216.34';
 const resolver = async () => [{ address, family: 4 }];
 const target = new URL('http://example.com/');
-function factory(options: { body?: string; peer?: string; encoding?: string; stall?: boolean; capture?: (o: http.RequestOptions) => void } = {}): RequestFactory {
+function factory(options: { body?: string; peer?: string; encoding?: string; stall?: boolean; secure?: boolean; authorized?: boolean; status?: number; headers?: Record<string, string>; capture?: (o: http.RequestOptions) => void } = {}): RequestFactory {
   return (_url, init) => {
     options.capture?.(init);
     const request = new EventEmitter() as http.ClientRequest;
@@ -18,12 +19,14 @@ function factory(options: { body?: string; peer?: string; encoding?: string; sta
     init.signal?.addEventListener('abort', () => request.destroy(new Error('deadline')), { once: true });
     request.end = (() => {
       queueMicrotask(() => {
-        const socket = new EventEmitter() as EventEmitter & { remoteAddress: string };
+        const socket = new EventEmitter() as EventEmitter & { remoteAddress: string; authorized?: boolean };
         socket.remoteAddress = options.peer ?? address;
+        socket.authorized = options.authorized ?? true;
         request.emit('socket', socket); socket.emit('connect');
+        if (options.secure) socket.emit('secureConnect');
         if (destroyed || options.stall) return;
         const response = Object.assign(Readable.from([Buffer.from(options.body ?? 'hello')]), {
-          statusCode: 200, headers: { 'content-type': 'text/plain', ...(options.encoding ? { 'content-encoding': options.encoding } : {}) },
+          statusCode: options.status ?? 200, headers: { 'content-type': 'text/plain', ...options.headers, ...(options.encoding ? { 'content-encoding': options.encoding } : {}) },
         });
         request.emit('response', response);
       });
@@ -58,4 +61,17 @@ test('response size, unsupported encodings and request deadlines are enforced', 
   await assert.rejects(createTransport({ ...loadConfig({}), maxResponseBytes: 3 }, resolver, factory())(target, new AbortController().signal), /size/);
   await assert.rejects(createTransport(loadConfig({}), resolver, factory({ encoding: 'gzip' }))(target, new AbortController().signal), /encoding/);
   await assert.rejects(createTransport({ ...loadConfig({}), requestTimeoutMs: 10 }, resolver, factory({ stall: true }))(target, new AbortController().signal), /deadline/);
+});
+test('HTTPS retains certificate verification rather than accepting an unauthorized TLS socket', async () => {
+  const transport = createTransport(loadConfig({}), resolver, factory({ secure: true, authorized: false }));
+  await assert.rejects(transport(new URL('https://example.com/'), new AbortController().signal), /TLS verification/);
+});
+test('same-origin redirects cannot bypass revalidation when DNS changes to a private address', async () => {
+  const config = { ...loadConfig({ WEB_SECURITY_REQUIRE_PASSIVE_AUTH: 'false' }), requestIntervalMs: 1 };
+  let lookups = 0;
+  let connections = 0;
+  const transport = createTransport(config, async () => [{ address: ++lookups === 1 ? address : '127.0.0.1', family: 4 }],
+    factory({ status: 302, headers: { location: '/next' }, capture: () => { connections++; } }));
+  const result = await new WebSecurityScanner(config, { transport }).scan({ url: target.href });
+  assert.equal(result.status, 'partial'); assert.equal(connections, 1); assert.equal(lookups, 2);
 });

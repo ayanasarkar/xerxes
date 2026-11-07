@@ -9,7 +9,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ScannerConfig 
   };
   let grants: ScannerConfig['grants'] = [];
   if (env.WEB_SECURITY_GRANTS) {
-    const parsed: unknown = JSON.parse(env.WEB_SECURITY_GRANTS);
+    let parsed: unknown;
+    try { parsed = JSON.parse(env.WEB_SECURITY_GRANTS); }
+    catch { throw new Error('Invalid WEB_SECURITY_GRANTS JSON'); }
     if (!Array.isArray(parsed) || parsed.some((g) => !g || typeof g.token !== 'string' || g.token.length < 32 ||
       typeof g.origin !== 'string' || !Array.isArray(g.modes) || g.modes.length === 0 ||
       g.modes.some((m: unknown) => m !== 'passive' && m !== 'active') || !Number.isFinite(Date.parse(g.expiresAt)))) {
@@ -17,7 +19,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ScannerConfig 
     }
     grants = parsed;
     for (const grant of grants) {
-      const url = new URL(grant.origin);
+      let url: URL;
+      try { url = new URL(grant.origin); }
+      catch { throw new Error('Invalid WEB_SECURITY_GRANTS origin'); }
       if (!['http:', 'https:'].includes(url.protocol) || url.origin !== grant.origin || url.username || url.password) {
         throw new Error('Authorization grants must specify exact HTTP(S) origins');
       }

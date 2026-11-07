@@ -54,6 +54,9 @@ test('sensitive exposure reports markers without echoing secrets or testing cred
 test('forms resolve actions correctly and never submit data', () => {
   assert.equal(run('insecure-forms', page('<form action="http://example.com/login"></form>')).length, 1);
   assert.equal(run('insecure-forms', page('<form action="/login"></form><form></form>')).length, 0);
+  assert.equal(run('insecure-forms', page('<form id="login"><input type="password" name="pw" value="secret"></form>')).length, 1);
+  assert.equal(run('insecure-forms', page('<form id="login" method="post"></form><input form="login" type="password" name="pw">')).length, 0);
+  assert.equal(run('insecure-forms', page('<form method="post"><button formaction="http://example.com/">Submit</button></form>')).length, 1);
 });
 test('dependency findings require fetched content banners and a real advisory range', () => {
   assert.equal(run('dependencies', page('<script src="jquery-1.2.3.js"></script>')).length, 0);
@@ -64,4 +67,9 @@ test('all checks accept empty/malformed HTML and every emitted finding normalize
   for (const check of defaultChecks) for (const p of [page(), page('<form><script><div><input action=":::">'), page('x', { 'content-type': 'application/octet-stream' })]) {
     for (const finding of check.run(p)) assert.doesNotThrow(() => normalize(finding));
   }
+});
+test('oversized/malicious HTML structure remains bounded and does not inspect beyond coverage', () => {
+  assert.equal(run('insecure-forms', page(' '.repeat(262_144) + '<form action="http://example.com/"></form>')).length, 0);
+  assert.equal(run('insecure-forms', page('<i></i>'.repeat(10_001) + '<form action="http://example.com/"></form>')).length, 0);
+  assert.equal(run('sensitive-exposure', page('\n'.repeat(100_000))).length, 0);
 });

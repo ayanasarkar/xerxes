@@ -39,15 +39,18 @@ test('gateway budgets are hard limits even for repeated URLs and unsafe methods'
   assert.equal((await g.send('http://example.com/', 'DELETE')).status, 403);
   assert.equal(calls, 1); assert.equal(g.state.exhausted, true);
 });
-test('gateway blocks cross-scope redirects, CONNECT and WebSocket upgrades', async (t) => {
-  const g = await fixture(t, async (url) => ({ url: url.href, status: 302, headers: { location: 'http://169.254.169.254/' }, body: '' }));
-  assert.equal((await g.send('http://example.com/')).status, 502);
+test('gateway never follows cross-scope redirects and blocks CONNECT', async (t) => {
+  let calls = 0;
+  const g = await fixture(t, async (url) => { calls++; return { url: url.href, status: 302, headers: { location: 'http://169.254.169.254/' }, body: '' }; });
+  assert.equal((await g.send('http://example.com/')).status, 302);
+  assert.equal((await g.send('http://169.254.169.254/')).status, 403);
+  assert.equal(calls, 1);
   const code = await new Promise<number>((resolve, reject) => {
     const req = http.request({ hostname: '127.0.0.1', port: g.port, method: 'CONNECT', path: 'example.com:443' });
     req.on('connect', (res, socket) => { resolve(res.statusCode!); socket.destroy(); }); req.on('error', reject); req.end();
   });
   assert.equal(code, 403);
-  assert.equal(g.state.failures, 1);
+  assert.equal(g.state.failures, 0);
 });
 test('gateway refuses expired or mismatched policies', () => {
   assert.throws(() => createGateway({ origin: 'https://example.com', proxyOrigin: 'http://evil.example', maxRequests: 1, expiresAt: Date.now() + 1000 }, config));

@@ -89,3 +89,9 @@ test('HAR redacts cookie values, query values and common credential markers', ()
   assert.ok(!har.includes('session=secret')); assert.ok(!har.includes('topsecret')); assert.ok(!har.includes('hunter2'));
   assert.ok(har.includes('HttpOnly'));
 });
+test('cleanup errors cannot silently produce completed backend status', async () => {
+  const { docker } = mockDocker({ error: 'rm' });
+  const result = await createZapBackend(config, docker)(request, pages, 9, new AbortController().signal);
+  assert.equal(result.status, 'failed');
+  assert.ok(result.limitations.some((reason) => reason.includes('cleanup incomplete')));
+});

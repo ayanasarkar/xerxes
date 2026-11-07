@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { setTimeout as delay } from 'node:timers/promises';
 import { loadConfig } from '../src/modules/web-security/config.js';
 import { WebSecurityScanner } from '../src/modules/web-security/scanner.js';
 import { PolicyError } from '../src/modules/web-security/network/policy.js';
@@ -80,4 +81,21 @@ test('ZAP unavailable/errors are explicit and active scans cannot silently becom
   assert.equal(result.status, 'partial'); assert.equal(result.backend.zap, 'unavailable');
   const throws = new WebSecurityScanner(cfg, { transport: async (url) => page(url), zap: async () => { throw new Error(); } });
   assert.equal((await throws.scan(request)).backend.zap, 'failed');
+});
+test('scan deadlines cancel in-flight work and authorization expiry bounds the scan', async () => {
+  for (const cfg of [
+    { ...config, scanTimeoutMs: 10 },
+    { ...config, grants: [{ ...config.grants[0]!, expiresAt: new Date(Date.now() + 30).toISOString() }] },
+  ]) {
+    const scanner = new WebSecurityScanner(cfg, { transport: async (url, signal) => { await delay(500, undefined, { signal }); return page(url); } });
+    const result = await scanner.scan(request);
+    assert.ok(['failed', 'blocked'].includes(result.status));
+    assert.equal(result.findings.length, 0);
+  }
+});
+test('two allowed concurrent scans retain distinct result/finding objects', async () => {
+  const scanner = new WebSecurityScanner(config, { transport: async (url) => { await delay(5); return page(url); } });
+  const [a, b] = await Promise.all([scanner.scan(request), scanner.scan(request)]);
+  assert.equal(a.status, 'completed'); assert.equal(b.status, 'completed');
+  assert.notStrictEqual(a.findings, b.findings); assert.notEqual(a.findings[0]?.id, b.findings[0]?.id);
 });

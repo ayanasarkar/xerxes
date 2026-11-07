@@ -7,19 +7,34 @@ export function header(page: Page, name: string): string {
   return Array.isArray(entry?.[1]) ? entry[1].join(', ') : entry?.[1] ?? '';
 }
 export const isHtml = (page: Page) => /(?:text\/html|application\/xhtml\+xml)/i.test(header(page, 'content-type'));
-export interface Element { tag: string; attrs: Record<string, string>; }
+export interface Element { tag: string; attrs: Record<string, string>; formOwner?: Record<string, string>; }
 const cache = new WeakMap<Page, Element[]>();
 export function elements(page: Page): Element[] {
   if (!isHtml(page)) return [];
   const cached = cache.get(page);
   if (cached) return cached;
-  const root = parse(page.body);
-  const nodes: DefaultTreeAdapterMap['node'][] = [root];
+  // Bound parser work before creating a DOM, not merely after allocating it.
+  let input = page.body.slice(0, 262_144);
+  let cursor = 0;
+  for (let tags = 0; tags <= 10_000; tags++) {
+    const next = input.indexOf('<', cursor);
+    if (next < 0) break;
+    if (tags === 10_000) { input = input.slice(0, next); break; }
+    cursor = next + 1;
+  }
+  const root = parse(input);
+  const nodes: { node: DefaultTreeAdapterMap['node']; formOwner?: Record<string, string> }[] = [{ node: root }];
   const result: Element[] = [];
   while (nodes.length && result.length < 10_000) {
-    const node = nodes.pop()!;
-    if ('tagName' in node) result.push({ tag: node.tagName, attrs: Object.fromEntries(node.attrs.map((a) => [a.name, a.value])) });
-    if ('childNodes' in node) for (let i = node.childNodes.length - 1; i >= 0; i--) nodes.push(node.childNodes[i]!);
+    const entry = nodes.pop()!;
+    const { node } = entry;
+    let formOwner = entry.formOwner;
+    if ('tagName' in node) {
+      const attrs = Object.fromEntries(node.attrs.map((a) => [a.name, a.value]));
+      if (node.tagName === 'form') formOwner = attrs;
+      result.push({ tag: node.tagName, attrs, formOwner });
+    }
+    if ('childNodes' in node) for (let i = node.childNodes.length - 1; i >= 0; i--) nodes.push({ node: node.childNodes[i]!, formOwner });
   }
   cache.set(page, result);
   return result;

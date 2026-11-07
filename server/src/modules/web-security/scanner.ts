@@ -37,7 +37,7 @@ export class WebSecurityScanner {
         'Only bounded same-origin HTTP responses are assessed; no finding does not imply a secure website.',
         'CORS origin reflection and credentialed reads are not tested. Dependency advisory coverage is limited to recognized jQuery banners.',
         'Browser behavior, CSS imports, dynamically generated content, and actual exploitability are not verified.',
-        'HTML inspection is capped at 10,000 elements per response and reports at 500 findings.',
+        'HTML structure inspection is capped at the first 256 KiB and 10,000 tag starts per response; reports at 500 findings.',
       ],
     };
     const finish = () => {

@@ -85,6 +85,7 @@ export function createZapBackend(config: ScannerConfig, docker: DockerRunner = r
     const shadow = new URL(target.href); shadow.protocol = 'http:'; shadow.port = '';
     const created: string[] = [];
     let volumeCreated = false;
+    let output: BackendOutput | undefined;
     const api = async (component: string, type: string, method: string, params: Record<string, string> = {}): Promise<Record<string, unknown>> => {
       const url = new URL(`http://127.0.0.1:8090/JSON/${component}/${type}/${method}/`);
       url.search = new URLSearchParams({ apikey: apiKey, ...params }).toString();
@@ -95,14 +96,14 @@ export function createZapBackend(config: ScannerConfig, docker: DockerRunner = r
     };
     try {
       if (active) {
-        await docker(['volume', 'create', volume], { signal }); volumeCreated = true;
+        await docker(['volume', 'create', '--label', `xerxes.web-security.scan=${id}`, volume], { signal }); volumeCreated = true;
         created.push(gateway);
-        await docker(['run', '-d', '--name', gateway, '--pull', 'never', '--network', 'bridge', '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges', '--memory', '192m', '--cpus', '0.5', '--pids-limit', '64', '--tmpfs', '/tmp:rw,noexec,nosuid,size=16m', '--mount', `type=volume,source=${volume},target=/gateway`,
+        await docker(['run', '-d', '--name', gateway, '--label', `xerxes.web-security.scan=${id}`, '--pull', 'never', '--network', 'bridge', '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges', '--memory', '192m', '--cpus', '0.5', '--pids-limit', '64', '--tmpfs', '/tmp:rw,noexec,nosuid,size=16m', '--mount', `type=volume,source=${volume},target=/gateway`,
           '-e', `XERXES_GATEWAY_POLICY=${JSON.stringify({ origin: target.origin, proxyOrigin: shadow.origin, maxRequests: budget, expiresAt: Math.min(authorizationDeadline, Date.now() + Math.min(config.zap.timeoutMs - 100, config.scanTimeoutMs)) })}`,
           '-e', `WEB_SECURITY_MAX_REQUESTS=${config.maxRequests}`, '-e', `WEB_SECURITY_REQUEST_INTERVAL_MS=${config.requestIntervalMs}`, '-e', `WEB_SECURITY_REQUEST_TIMEOUT_MS=${config.requestTimeoutMs}`, '-e', `WEB_SECURITY_MAX_RESPONSE_BYTES=${config.maxResponseBytes}`, '-e', `WEB_SECURITY_ZAP_TIMEOUT_MS=${config.zap.timeoutMs}`, config.zap.gatewayImage], { signal });
       }
       created.push(name);
-      await docker(['run', '-d', '--name', name, '--pull', 'never', '--network', 'none', '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges', '--memory', '1g', '--cpus', '1', '--pids-limit', '256', '--tmpfs', '/tmp:rw,nosuid,noexec,size=256m', '--tmpfs', '/home/zap:rw,nosuid,size=512m,uid=1000,gid=1000', '--tmpfs', '/zap/wrk:rw,noexec,nosuid,size=32m,uid=1000,gid=1000',
+      await docker(['run', '-d', '--name', name, '--label', `xerxes.web-security.scan=${id}`, '--pull', 'never', '--network', 'none', '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges', '--memory', '1g', '--cpus', '1', '--pids-limit', '256', '--tmpfs', '/tmp:rw,nosuid,noexec,size=256m', '--tmpfs', '/home/zap:rw,nosuid,size=512m,uid=1000,gid=1000', '--tmpfs', '/zap/wrk:rw,noexec,nosuid,size=32m,uid=1000,gid=1000',
         ...(active ? ['--mount', `type=volume,source=${volume},target=/gateway,readonly`] : []), config.zap.image,
         'zap.sh', '-daemon', '-host', '127.0.0.1', '-port', '8090', '-silent', '-config', `api.key=${apiKey}`, '-config', 'api.disablekey=false',
         '-config', 'autoupdate.checkOnStart=false', '-config', 'autoupdate.downloadNewRelease=false', '-config', 'autoupdate.installAddonUpdates=false'], { signal });
@@ -167,12 +168,22 @@ export function createZapBackend(config: ScannerConfig, docker: DockerRunner = r
         const state = JSON.parse(logs.trim().split(/\r?\n/).at(-1) ?? '{}') as { exhausted?: boolean; denied?: number; failures?: number; forwarded?: number };
         if (state.exhausted || state.denied || state.failures || !state.forwarded) { status = 'failed'; limitations.push('Gateway blocked requests, reached a budget, or saw upstream failures; active coverage is incomplete'); }
       }
-      return { status, findings: normalizeZapAlerts(alerts, target, active ? shadow.origin : undefined), limitations };
-    } catch { return { status: signal.aborted ? 'failed' : 'blocked', findings: [], limitations: ['ZAP did not finish or sandbox/API validation failed; no complete active coverage can be claimed'] }; }
+      if (Array.isArray(alerts) && alerts.length >= 1000) { status = 'failed'; limitations.push('ZAP alert collection limit reached; output may be truncated'); }
+      output = { status, findings: normalizeZapAlerts(alerts, target, active ? shadow.origin : undefined), limitations };
+      return output;
+    } catch {
+      output = { status: signal.aborted ? 'failed' : 'blocked', findings: [], limitations: ['ZAP did not finish or sandbox/API validation failed; no complete active coverage can be claimed'] };
+      return output;
+    }
     finally {
       // Cleanup must run even after cancellation. Names are random and belong exclusively to this scan.
-      for (const container of created.reverse()) { try { await docker(['rm', '-f', container], { timeoutMs: 10_000 }); } catch { /* Operator can remove labeled-prefix orphans; never delete broad paths. */ } }
-      if (volumeCreated) { try { await docker(['volume', 'rm', volume], { timeoutMs: 10_000 }); } catch { /* Report operational cleanup separately in deployment monitoring. */ } }
+      let cleanupFailed = false;
+      for (const container of created.reverse()) { try { await docker(['rm', '-f', container], { timeoutMs: 10_000 }); } catch { cleanupFailed = true; } }
+      if (volumeCreated) { try { await docker(['volume', 'rm', volume], { timeoutMs: 10_000 }); } catch { cleanupFailed = true; } }
+      if (cleanupFailed && output) {
+        output.status = 'failed';
+        output.limitations.push(`Docker cleanup incomplete; operator must inspect resources labeled xerxes.web-security.scan=${id}`);
+      }
     }
   };
 }
