@@ -1,7 +1,10 @@
 import express from 'express';
-import { mockPipeline } from './mock-pipeline.js';
+import { PipelineRunner } from './pipeline/pipeline-runner.js';
+import { buildSecurityPipeline } from './pipelines/mock-pipeline.js';
 
 export function createApp() {
+  const dag = buildSecurityPipeline();
+  const runner = new PipelineRunner(dag);
   const app = express();
   app.use(express.json());
 
@@ -10,7 +13,7 @@ export function createApp() {
   });
 
   app.post('/api/analyze', async (req, res) => {
-    const results = await mockPipeline.run(req.body);
+    const results = await runner.run(req.body);
     res.json(results);
   });
 
